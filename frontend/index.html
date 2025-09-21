@@ -11,6 +11,7 @@
     select { width:100%; margin-top:6px; padding:8px; font-size:1rem; }
     .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:16px; max-width:520px; }
     .muted { color:#666; font-size:.9rem; }
+    .error { color:#b00020; margin: 10px 0 0; font-size: .95rem; }
   </style>
 </head>
 <body>
@@ -29,6 +30,8 @@
 
     <label>Moteur / Finition</label>
     <select id="trim" disabled></select>
+
+    <div id="err" class="error" style="display:none"></div>
   </div>
 
   <div class="card" style="margin-top: 16px;">
@@ -44,15 +47,38 @@
     </div>
   </div>
 
+  <!-- IMPORTANT : doit être servi en 200 depuis /frontend/config.js -->
   <script src="./config.js"></script>
+
   <script>
-    const API_BASE = window.API_BASE;
+    // petit helper d’affichage d’erreurs lisibles
+    const showError = (msg) => {
+      const el = document.getElementById('err');
+      el.textContent = msg;
+      el.style.display = 'block';
+      console.error(msg);
+    };
+
+    if (!window.API_BASE) {
+      showError("Impossible de charger config.js (API_BASE manquant). Vérifie que 'config.js' est bien dans /frontend et que Render publie le dossier 'frontend'.");
+    }
+
+    // Normalise API_BASE (sans slash final) pour éviter // dans l’URL
+    const API_BASE = String(window.API_BASE || '').replace(/\/+$/, '');
 
     async function API(path, params = {}) {
+      if (!API_BASE.startsWith("http")) {
+        showError("API_BASE invalide dans config.js : " + API_BASE);
+        throw new Error("API_BASE invalide");
+      }
       const url = new URL(API_BASE + path);
       Object.entries(params).forEach(([k,v]) => url.searchParams.set(k,v));
       const r = await fetch(url);
-      if (!r.ok) throw new Error(`API ${path} -> ${r.status}`);
+      if (!r.ok) {
+        const txt = await r.text().catch(()=>"");
+        showError(`Erreur API ${path} -> ${r.status} ${r.statusText} ${txt ? " : "+txt : ""}`);
+        throw new Error(`API ${path} -> ${r.status}`);
+      }
       return r.json();
     }
 
@@ -66,48 +92,67 @@
     const formatEUR = (n) => n==null ? "—" : n.toLocaleString("fr-BE",{style:"currency",currency:"EUR"});
 
     async function init(){
-      const makes = await API("/api/makes");
-      makeSel.innerHTML = makes.map(m => `<option value="${m}">${m}</option>`).join('');
-      modelSel.disabled = yearSel.disabled = trimSel.disabled = true;
+      try {
+        const makes = await API("/api/makes");
+        if (!Array.isArray(makes) || makes.length === 0) {
+          showError("Aucune marque reçue. Vérifie /api/makes côté backend.");
+          makeSel.innerHTML = '<option>Aucune marque</option>';
+          return;
+        }
+        makeSel.innerHTML = makes.map(m => `<option value="${m}">${m}</option>`).join('');
+        modelSel.disabled = yearSel.disabled = trimSel.disabled = true;
 
-      makeSel.addEventListener('change', onMake);
-      modelSel.addEventListener('change', onModel);
-      yearSel.addEventListener('change', onYear);
-      trimSel.addEventListener('change', onTrim);
+        makeSel.addEventListener('change', onMake);
+        modelSel.addEventListener('change', onModel);
+        yearSel.addEventListener('change', onYear);
+        trimSel.addEventListener('change', onTrim);
+      } catch (e) {
+        // déjà loggé par API()
+      }
     }
 
     async function onMake(){
-      const models = await API("/api/models", { make: makeSel.value });
-      modelSel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
-      modelSel.disabled = false;
-      yearSel.innerHTML=''; yearSel.disabled = true;
-      trimSel.innerHTML=''; trimSel.disabled = true;
-      tmcEl.textContent = tcEl.textContent = "—";
+      try {
+        const models = await API("/api/models", { make: makeSel.value });
+        modelSel.innerHTML = models.map(m => `<option value="${m}">${m}</option>`).join('');
+        modelSel.disabled = false;
+        yearSel.innerHTML=''; yearSel.disabled = true;
+        trimSel.innerHTML=''; trimSel.disabled = true;
+        tmcEl.textContent = tcEl.textContent = "—";
+      } catch {}
     }
 
     async function onModel(){
-      const years = await API("/api/years", { make: makeSel.value, model: modelSel.value });
-      yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
-      yearSel.disabled = false;
-      trimSel.innerHTML=''; trimSel.disabled = true;
-      tmcEl.textContent = tcEl.textContent = "—";
+      try {
+        const years = await API("/api/years", { make: makeSel.value, model: modelSel.value });
+        yearSel.innerHTML = years.map(y => `<option value="${y}">${y}</option>`).join('');
+        yearSel.disabled = false;
+        trimSel.innerHTML=''; trimSel.disabled = true;
+        tmcEl.textContent = tcEl.textContent = "—";
+      } catch {}
     }
 
     async function onYear(){
-      const trims = await API("/api/engines", {
-        make: makeSel.value, model: modelSel.value, year: yearSel.value
-      });
-      trimSel.innerHTML = trims.map(t => `<option value="${t.trim_id ?? ""}">${t.engine}${t.trim_id ? "" : " (spécs manquantes)"}</option>`).join('');
-      trimSel.disabled = false;
-      tmcEl.textContent = tcEl.textContent = "—";
+      try {
+        const trims = await API("/api/engines", {
+          make: makeSel.value, model: modelSel.value, year: yearSel.value
+        });
+        trimSel.innerHTML = trims.map(t =>
+          `<option value="${t.trim_id ?? ""}">${t.engine}${t.trim_id ? "" : " (spécs manquantes)"}</option>`
+        ).join('');
+        trimSel.disabled = false;
+        tmcEl.textContent = tcEl.textContent = "—";
+      } catch {}
     }
 
     async function onTrim(){
       const id = trimSel.value;
       if (!id) { tmcEl.textContent = "—"; tcEl.textContent = "—"; return; }
-      const q = await API("/api/quote", { trimId: id });
-      tmcEl.textContent = formatEUR(q.tmc);
-      tcEl.textContent  = formatEUR(q.taxe_annuelle);
+      try {
+        const q = await API("/api/quote", { trimId: id });
+        tmcEl.textContent = formatEUR(q.tmc);
+        tcEl.textContent  = formatEUR(q.taxe_annuelle);
+      } catch {}
     }
 
     init();
